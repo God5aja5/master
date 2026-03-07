@@ -51,7 +51,7 @@ except ImportError:
 #  CONFIG
 # ══════════════════════════════════════════════════════════
 
-BOT_TOKEN = "8778892251:AAEvOkfeGplmAkXFnlC3tHRrx54e1RvQeDY"
+BOT_TOKEN = "8709060358:AAHfQb9zwqUR7kvuD2NrgHdVSMQR-Z7sqdY"
 ADMIN_ID = 7265489223
 DEFAULT_THREADS = 30
 MAX_LINES = 10000
