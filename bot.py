@@ -51,9 +51,9 @@ except ImportError:
 #  CONFIG
 # ══════════════════════════════════════════════════════════
 
-BOT_TOKEN = "8629858316:AAGRGjpOEjRvaT7VZ3hLffZY3yqFgDcVD08"
+BOT_TOKEN = "8709060358:AAG74M4MpJ-ICkWf9O1mpkwxd9o9nYotJ0o"
 ADMIN_ID = 7265489223
-DEFAULT_THREADS = 50
+DEFAULT_THREADS = 30
 MAX_LINES = 10000
 MAX_FILE_SIZE_MB = 20
 DB_FILE = "bot_database.json"
